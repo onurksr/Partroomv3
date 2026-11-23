@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Parti Odası — 13 Oyun</title>
+  <style>
+    :root { --bg:#0f172a; --card:#1e293b; --muted:#94a3b8; --txt:#f8fafc; --acc:#38bdf8; --ok:#22c55e; --bad:#ef4444; --bdr:#334155; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--txt); min-height:100vh; }
+    .wrap { max-width:920px; margin:0 auto; padding:18px; }
+    .card { background:var(--card); border:1px solid var(--bdr); border-radius:14px; padding:16px; margin-bottom:14px; }
+    .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:10px; }
+    .gcard { background:#0f172a; border:1px solid var(--bdr); border-radius:10px; padding:10px; text-align:left; color:var(--txt); cursor:pointer; }
+    .gcard.on { border-color:var(--acc); box-shadow:0 0 0 1px var(--acc); }
+    button, input, select { background:#0f172a; color:var(--txt); border:1px solid var(--bdr); border-radius:8px; padding:8px 12px; font-size:14px; }
+    button { cursor:pointer; }
+    button.pri { background:var(--acc); color:#04131c; font-weight:700; border:none; }
+    button.o.on { background:var(--acc); color:#04131c; font-weight:700; border-color:var(--acc); }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .mu { color:var(--muted); font-size:13px; }
+    .bar { height:8px; background:var(--acc); border-radius:999px; width:100%; transition:width .25s linear; }
+    .toast { position:fixed; bottom:18px; right:18px; background:#020617; border:1px solid var(--acc); padding:10px 14px; border-radius:10px; z-index:99; }
+    .cn-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; margin:12px 0; }
+    .cn-card { padding:10px 6px; border-radius:8px; border:1px solid var(--bdr); background:#0f172a; text-align:center; font-size:13px; }
+    .cn-card.red { border-color:#ef4444; background:rgba(239,68,68,.18); }
+    .cn-card.blue { border-color:#38bdf8; background:rgba(56,189,248,.18); }
+    .cn-card.neutral { border-color:#64748b; background:rgba(100,116,139,.15); }
+    .cn-card.assassin { border-color:#f59e0b; background:rgba(245,158,11,.22); }
+    img.media-img { max-width:100%; max-height:360px; border-radius:10px; display:block; margin:10px auto; }
+  </style>
+</head>
+<body>
+  <div class="wrap" id="app"></div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const sock = io();
+    let S = null;
+    let skew = 0;
+    let penaltyEndsAt = 0;
+    let nameInput = localStorage.getItem('po_name') || '';
+    let codeInput = '';
+    let musicTab = 'all';
+
+    let cfg = {
+      game: 'tf',
+      mode: 'solo',
+      rounds: 5,
+      time: 20,
+      teams: 2,
+      imposterCount: 1,
+      imposterGuessBonus: true,
+      cats: [],
+      mixMode: false,
+      mixGames: ['emoji', 'song', 'film'],
+      mixRoundsPerGame: 2,
+      musicFilter: { categories: [], artists: [], lang: 'all', minYear: '', maxYear: '', onlyPopular: false, randomMix: false },
+      filmFilter: { categories: [], series: [], region: 'all', minYear: '', maxYear: '', popLevel: 'all', randomMix: false },
+    };
+
+    const GAMES = [
+      ['tf', 'Doğru / Yanlış', 'Hızlı karar'],
+      ['closest', 'En Yakın Cevap', 'Sayısal tahmin'],
+      ['quiz', 'Hızlı Quiz', '4 şıklı bilgi'],
+      ['liar', 'Hangisi Yalan', 'Yalanı bul'],
+      ['wyr', 'Kimi Seçerdin', 'Çoğunluk oyu'],
+      ['ml', 'Kim Daha Olası', 'Grup oylaması'],
+      ['emoji', 'Emojiden Tahmin', 'İpucu + tahmin'],
+      ['song', 'Şarkıyı İlk Sen Bil', 'Sesli tahmin'],
+      ['film', 'Filmden Kareyi Bil', 'TMDB sahne karesi'],
+      ['pixel', 'Pikseli Aç', 'Kademeli netleşme'],
+      ['codenames', 'Codenames', 'Takım kelimeleri'],
+      ['werewolf', 'Vampir Köylü', 'Gece & gündüz'],
+      ['imposter', 'Casus Kim', 'Kelime & ipucu'],
+    ];
+
+    const $ = id => document.getElementById(id);
+    const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
+
+    function toast(msg) {
+      const el = document.createElement('div');
+      el.className = 'toast';
+      el.textContent = msg;
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 2600);
+    }
+
+    function selectGame(id) {
+      cfg.game = id;
+      cfg.cats = [];
+      draw();
+      sock.emit('cfg', { game: id, cats: [] });
+    }
+
+    function toggleMixGame(id) {
+      if (['codenames', 'werewolf', 'imposter'].includes(id)) return;
+      const set = new Set(cfg.mixGames);
+      if (set.has(id)) {
+        if (set.size > 2) set.delete(id);
+      } else {
+        if (set.size < 4) set.add(id);
+      }
+      cfg.mixGames = [...set];
+      draw();
+      sock.emit('cfg', { mixGames: cfg.mixGames });
+    }
+
+    function setMusicTab(tab) {
+      musicTab = tab;
+      if (tab === 'oguzhan') {
+        cfg.musicFilter.artists = ['Oğuzhan Koç'];
+        cfg.musicFilter.categories = ['Oğuzhan Koç'];
+        cfg.musicFilter.randomMix = false;
+      } else {
+        cfg.musicFilter.artists = [];
+        cfg.musicFilter.categories = [];
+      }
+      draw();
+      sock.emit('cfg', { musicFilter: cfg.musicFilter });
+    }
+
+    function gameCardsHTML() {
+      return `<div class="grid">${GAMES.map(([id, title, meta]) => {
+        const active = cfg.mixMode ? cfg.mixGames.includes(id) : cfg.game === id;
+        const fn = cfg.mixMode ? `toggleMixGame('${id}')` : `selectGame('${id}')`;
+        return `<button type="button" class="gcard ${active ? 'on' : ''}" onclick="${fn}">
+          <div><strong>${esc(title)}</strong></div>
+          <div class="mu">${esc(meta)}</div>
+        </button>`;
+      }).join('')}</div>`;
+    }
+
+    function mediaFiltersHTML() {
+      const cat = S && S.catalog ? S.catalog : {};
+      const musicCount = cat.musicCount || 0;
+      const filmCount = cat.filmCount || 0;
+      const allArt = [...(cat.artists?.tr || []), ...(cat.artists?.en || [])];
+
+      if (cfg.game === 'song') {
+        return `<div class="card">
+          <div class="row" style="justify-content:space-between;margin-bottom:8px">
+            <strong>Şarkı Filtreleri (${musicCount} şarkı)</strong>
+            <div class="row">
+              <button type="button" class="o ${musicTab === 'all' ? 'on' : ''}" onclick="setMusicTab('all')">Tüm Şarkılar</button>
+              <button type="button" class="o ${musicTab === 'oguzhan' ? 'on' : ''}" onclick="setMusicTab('oguzhan')">Oğuzhan Koç</button>
+            </div>
+          </div>
+          <div class="row">
+            <select onchange="cfg.musicFilter.lang=this.value;sock.emit('cfg',{musicFilter:cfg.musicFilter})">
+              <option value="all" ${cfg.musicFilter.lang==='all'?'selected':''}>Tüm Diller</option>
+              <option value="tr" ${cfg.musicFilter.lang==='tr'?'selected':''}>Türkçe</option>
+              <option value="en" ${cfg.musicFilter.lang==='en'?'selected':''}>Yabancı</option>
+            </select>
+            <select onchange="setMusicTab(this.value==='Oğuzhan Koç'?'oguzhan':'all');cfg.musicFilter.artists=this.value?[this.value]:[];sock.emit('cfg',{musicFilter:cfg.musicFilter})">
+              <option value="">Tüm Sanatçılar (${allArt.length})</option>
+              ${allArt.map(a => `<option value="${esc(a)}" ${cfg.musicFilter.artists.includes(a)?'selected':''}>${esc(a)}</option>`).join('')}
+            </select>
+          </div>
+        </div>`;
+      }
+
+      if (cfg.game === 'film') {
+        const fCats = cat.filmCategories || [];
+        return `<div class="card">
+          <strong>Film Filtreleri (${filmCount} film)</strong>
+          <div class="row" style="margin-top:8px">
+            <select onchange="cfg.filmFilter.region=this.value;sock.emit('cfg',{filmFilter:cfg.filmFilter})">
+              <option value="all" ${cfg.filmFilter.region==='all'?'selected':''}>Tüm Bölgeler</option>
+              <option value="tr" ${cfg.filmFilter.region==='tr'?'selected':''}>Türk Sineması</option>
+              <option value="hollywood" ${cfg.filmFilter.region==='hollywood'?'selected':''}>Hollywood / Dünya</option>
+            </select>
+            <select onchange="cfg.filmFilter.categories=this.value?[this.value]:[];sock.emit('cfg',{filmFilter:cfg.filmFilter})">
+              <option value="">Tüm Kategoriler</option>
+              ${fCats.map(c => `<option value="${esc(c)}" ${cfg.filmFilter.categories.includes(c)?'selected':''}>${esc(c)}</option>`).join('')}
+            </select>
+          </div>
+        </div>`;
+      }
+      return '';
+    }
+
+    function draw() {
+      const app = $('app');
+      if (!S) {
+        app.innerHTML = `<div class="card">
+          <h1>Parti Odası</h1>
+          <p class="mu">13 standart oyun ve Karma Mod ile tek odada eğlenceye başla.</p>
+          <div class="row" style="margin-top:12px">
+            <input id="pName" placeholder="Adın" value="${esc(nameInput)}" oninput="nameInput=this.value;localStorage.setItem('po_name',nameInput)" />
+            <button type="button" class="pri" onclick="sock.emit('create',{name:nameInput})">Oda Kur</button>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <input id="rCode" placeholder="Oda Kodu" value="${esc(codeInput)}" oninput="codeInput=this.value.toUpperCase()" />
+            <button type="button" onclick="sock.emit('join',{code:codeInput,name:nameInput})">Odaya Katıl</button>
+          </div>
+        </div>`;
+        return;
+      }
+
+      if (S.phase === 'lobby') {
+        const playersHtml = (S.players || []).map(p =>
+          `<li>${esc(p.name)} ${p.isHost ? '(Kurucu)' : ''} — <strong>${p.score}</strong> puan</li>`
+        ).join('');
+
+        app.innerHTML = `<div class="card">
+          <div class="row" style="justify-content:space-between">
+            <div><strong>Oda Kodu: ${esc(S.code)}</strong> <span class="mu">(${(S.players || []).length} oyuncu)</span></div>
+            <div class="row">
+              <label class="mu"><input type="checkbox" ${cfg.mixMode?'checked':''} onchange="cfg.mixMode=this.checked;draw();sock.emit('cfg',{mixMode:cfg.mixMode})" /> Karma Mod</label>
+              <select onchange="cfg.mode=this.value;sock.emit('cfg',{mode:cfg.mode})">
+                <option value="solo" ${cfg.mode==='solo'?'selected':''}>Bireysel</option>
+                <option value="teams" ${cfg.mode==='teams'?'selected':''}>Takımlı</option>
+              </select>
+            </div>
+          </div>
+          <ul style="margin:10px 0 0 18px">${playersHtml}</ul>
+        </div>
+
+        <div class="card">
+          <div style="margin-bottom:8px"><strong>Oyun seç (13 Mod)</strong></div>
+          ${gameCardsHTML()}
+          <div class="row" style="margin-top:12px">
+            <label class="mu">Tur: <input type="number" min="3" max="20" value="${cfg.rounds}" style="width:68px" onchange="cfg.rounds=+this.value;sock.emit('cfg',{rounds:cfg.rounds})" /></label>
+            <label class="mu">Süre (sn): <input type="number" min="10" max="60" value="${cfg.time}" style="width:72px" onchange="cfg.time=+this.value;sock.emit('cfg',{time:cfg.time})" /></label>
+          </div>
+        </div>
+
+        ${mediaFiltersHTML()}
+
+        ${S.isHost ? `<div class="card"><button type="button" class="pri" onclick="sock.emit('start',cfg)">Oyunu Başlat</button></div>` : `<div class="card mu">Kurucunun oyunu başlatması bekleniyor...</div>`}`;
+        return;
+      }
+
+      const q = S.q || {};
+      let body = `<div class="card">
+        <div class="row" style="justify-content:space-between">
+          <div><strong>${esc(q.c || S.game)}</strong> · Tur ${S.round}/${S.totalRounds}</div>
+          <div class="mu" id="nf"></div>
+        </div>
+        <h2 style="margin:10px 0">${esc(q.t || '')}</h2>
+        ${S.phase === 'question' ? `<div class="bar" id="bar"></div><p class="mu" id="t"></p>` : ''}
+      </div>`;
+
+      if (S.phase === 'question') {
+        if (S.game === 'film' && q.imageUrl) {
+          body += `<div class="card"><img class="media-img" src="${esc(q.imageUrl)}" alt="Film karesi" /></div>`;
+        }
+        if (S.game === 'pixel' && q.imageUrl) {
+          const px = q.pixelSize || 1;
+          body += `<div class="card"><img class="media-img" src="${esc(q.imageUrl)}" style="image-rendering:pixelated;filter:blur(${px > 4 ? 2 : 0}px)" alt="Piksel görsel" /></div>`;
+        }
+        if (S.game === 'song' && q.audioUrl) {
+          body += `<div class="card"><audio controls autoplay src="${esc(q.audioUrl)}"></audio></div>`;
+        }
+
+        if (S.game === 'tf') {
+          body += `<div class="card row"><button type="button" class="o" onclick="sock.emit('ans',true)">DOĞRU</button><button type="button" class="o" onclick="sock.emit('ans',false)">YANLIŞ</button></div>`;
+        } else if (S.game === 'quiz' || S.game === 'liar' || S.game === 'wyr') {
+          body += `<div class="card row">${(q.o || []).map((opt, i) => `<button type="button" class="o" onclick="sock.emit('ans',${i})">${esc(opt)}</button>`).join('')}</div>`;
+        } else if (S.game === 'closest') {
+          body += `<div class="card row"><input id="numAns" type="number" step="any" placeholder="Sayı gir" /><button type="button" id="ansBtn" class="o" onclick="sock.emit('ans',$('numAns').value)">GÖNDER</button></div>`;
+        } else if (S.game === 'ml') {
+          body += `<div class="card row">${(q.o || []).map(pl => `<button type="button" class="o" onclick="sock.emit('ans','${esc(pl.id)}')">${esc(pl.name)}</button>`).join('')}</div>`;
+        } else if (['emoji', 'song', 'film', 'pixel'].includes(S.game)) {
+          body += `<div class="card row"><input id="txtAns" placeholder="Tahminini yaz" onkeydown="if(event.key==='Enter')$('ansBtn').click()" /><button type="button" id="ansBtn" class="o" onclick="sock.emit('ans',$('txtAns').value);sock.emit('guess',$('txtAns').value)">GÖNDER</button></div>`;
+        } else if (S.game === 'codenames' && S.cn) {
+          body += `<div class="card">
+            <div class="mu">Sıradaki Takım: ${S.cn.turnTeam + 1}. Takım ${S.cn.clue ? `· İpucu: "${esc(S.cn.clue.word)}" (${S.cn.clue.count})` : ''}</div>
+            <div class="cn-grid">${S.cn.cards.map((c, i) => `<button type="button" class="cn-card ${c.color}" onclick="sock.emit('cn:guess',${i})">${esc(c.word)}</button>`).join('')}</div>
+            <button type="button" onclick="sock.emit('cn:endTurn')">Turu Bitir</button>
+          </div>`;
+        } else if (S.game === 'werewolf' && S.ww) {
+          const targets = (S.players || []).filter(p => p.alive && p.id !== S.me);
+          body += `<div class="card">
+            <div class="mu">${esc(S.ww.lastEvent || '')}</div>
+            <div class="row" style="margin-top:8px">${targets.map(t => `<button type="button" class="o" onclick="sock.emit('ww:vote','${esc(t.id)}')">${esc(t.name)}</button>`).join('')}</div>
+          </div>`;
+        } else if (S.game === 'imposter' && S.imp) {
+          body += `<div class="card">
+            <div>Kelimen: <strong>${esc(S.imp.word)}</strong></div>
+            <div class="row" style="margin-top:8px">
+              <input id="impClue" placeholder="Tek ipucu yaz" />
+              <button type="button" onclick="sock.emit('imp:clue',$('impClue').value)">İpucu Gönder</button>
+            </div>
+            <div class="row" style="margin-top:8px">${(S.players || []).filter(p => p.id !== S.me).map(t => `<button type="button" class="o" onclick="sock.emit('imp:vote','${esc(t.id)}')">Oy: ${esc(t.name)}</button>`).join('')}</div>
+          </div>`;
+        }
+      } else if (S.phase === 'reveal' || S.phase === 'gameover') {
+        const board = [...(S.players || [])].sort((a, b) => b.score - a.score)
+          .map((p, idx) => `<li>#${idx + 1} ${esc(p.name)} — <strong>${p.score}</strong> puan</li>`).join('');
+        body += `<div class="card">
+          <div>${esc(q.revealText || q.x || '')}</div>
+          <ol style="margin:10px 0 0 18px">${board}</ol>
+          ${S.phase === 'gameover' && S.isHost ? `<button type="button" class="pri" style="margin-top:12px" onclick="sock.emit('backToLobby')">Lobiye Dön</button>` : ''}
+        </div>`;
+      }
+
+      app.innerHTML = body;
+      tick();
+    }
+
+    function tick() {
+      if (!S) return;
+      const now = Date.now() + skew;
+      const rem = Math.max(0, (S.deadline || 0) - now);
+      if ($('t')) $('t').textContent = `Kalan süre: ${Math.ceil(rem / 1000)} sn`;
+      if ($('bar')) {
+        const denom = S.totalMs || ((S.cfg && S.cfg.time ? S.cfg.time : 20) * 1000);
+        $('bar').style.width = Math.min(100, (100 * rem) / Math.max(1, denom)) + '%';
+      }
+      if ($('nf')) {
+        const nx = S.q && S.q.nextAt ? Math.ceil((S.q.nextAt - now) / 1000) : 0;
+        const word = S.game === 'pixel' ? 'seviye' : 'kare';
+        $('nf').textContent = nx > 0 ? `Sıradaki ${word}: ${nx} sn` : `Son ${word}`;
+      }
+      if ($('ansBtn')) {
+        if (penaltyEndsAt) {
+          const prem = penaltyEndsAt - Date.now();
+          if (prem <= 0) {
+            penaltyEndsAt = 0;
+            $('ansBtn').disabled = false;
+            $('ansBtn').textContent = 'GÖNDER';
+          } else {
+            $('ansBtn').disabled = true;
+            $('ansBtn').textContent = `BEKLEME CEZASI (${Math.ceil(prem / 1000)} sn)`;
+          }
+        }
+      }
+    }
+
+    sock.on('s', next => {
+      S = next;
+      if (S.now) skew = S.now - Date.now();
+      penaltyEndsAt = (S.q && S.q.penaltyLeft > 0) ? (Date.now() + S.q.penaltyLeft) : 0;
+      if (S.cfg) cfg = { ...cfg, ...S.cfg };
+      draw();
+    });
+    sock.on('toast', toast);
+    setInterval(tick, 200);
+    draw();
+  </script>
+</body>
+</html>
