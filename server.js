@@ -141,7 +141,7 @@ const partial = (target, guess) => {
   return hit >= Math.max(1, Math.ceil(tWords.length * 0.6));
 };
 
-const escRe = s => String(s || '').replace(/[.*+?^${}()|[\]\]/g, '\$&');
+const escRe = s => String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 function matchTarget(guess, target) {
   const x = norm(target);
   if (!x) return false;
